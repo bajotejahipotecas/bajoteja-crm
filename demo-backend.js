@@ -186,7 +186,7 @@
       if (op.etapa === 1) op.etapa = 2;
       return { expediente: op.expediente, alias: op.alias, avisos: [], enlaces };
     },
-    'reenviar-enlace'(db, { operacion_id, canal }) {
+    'reenviar-enlace'(db, { operacion_id, canal }) { /* el motivo solo cambia el texto del email real */
       exigirEmails(db, operacion_id, canal);
       return { enlaces: crearEnlaces(db, db.ops.find((o) => o.id === operacion_id), canal) };
     },
@@ -264,10 +264,11 @@
       const x = contratoDemo(db, operacionId, tipo);
       if (!x) return null;
       const mia = db.firmas.find((f) => f.referencia_id === x.id && f.titular_id === titularId);
-      if (!mia && x.estado !== 'enviada') return null;
+      const abierta = x.estado === 'enviada' || (tipo === 'oferta' && x.estado === 'aceptada' && !db.firmas.some((f) => f.referencia_id === x.id));
+      if (!mia && !abierta) return null;
       return {
         tipo, id: x.id, titulo: tipo === 'oferta' ? 'Oferta' : 'Nota de Encargo', firmado: Boolean(mia),
-        firmado_at: mia?.created_at || null, completo: x.estado !== 'enviada', pide_consentimientos: tipo === 'nota',
+        firmado_at: mia?.created_at || null, completo: !abierta, pide_consentimientos: tipo === 'nota',
       };
     }).filter(Boolean);
   }
@@ -289,7 +290,8 @@
     firmar(db, { token, tipo, referencia_id, nombre, dni, consentimientos, firma }) {
       const e = enlaceValido(db, token);
       const x = contratoDemo(db, e.operacion_id, tipo);
-      if (!x || x.id !== referencia_id || x.estado !== 'enviada') throw new Error('Este documento ya no se puede firmar');
+      const abierta = x && (x.estado === 'enviada' || (tipo === 'oferta' && x.estado === 'aceptada'));
+      if (!x || x.id !== referencia_id || !abierta) throw new Error('Este documento ya no se puede firmar');
       if (!nombre?.trim() || !dni?.trim() || !firma) throw new Error('Faltan datos de la firma');
       const t = db.tits.find((y) => y.id === e.titular_id);
       const limpio = (v) => (v || '').toUpperCase().replace(/[\s.-]/g, '');
@@ -302,7 +304,7 @@
       const tits = tituLaresOp(db, e.operacion_id);
       const hechas = db.firmas.filter((f) => f.referencia_id === x.id);
       const completo = tipo === 'oferta' ? true : tits.every((y) => hechas.some((f) => f.titular_id === y.id));
-      if (completo && tipo === 'oferta') Object.assign(x, { estado: 'aceptada', via: 'firma', respondida_por: t.id, respondida_at: ahora() });
+      if (completo && tipo === 'oferta' && x.estado === 'enviada') Object.assign(x, { estado: 'aceptada', via: 'firma', respondida_por: t.id, respondida_at: ahora() });
       if (completo && tipo === 'nota') {
         Object.assign(x, { estado: 'firmada', firmado_at: ahora() });
         const op = db.ops.find((o) => o.id === e.operacion_id);

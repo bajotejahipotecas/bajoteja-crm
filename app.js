@@ -668,12 +668,15 @@
       const pdf = botonPdf(oferta.pdf_drive_id, oferta.id, 'Ver PDF') + botonPdf(oferta.pdf_firmado_drive_id, null, 'Ver firmada');
       const firmadaSinPdf = firmasDe(oferta.id).length > 0 && !oferta.pdf_firmado_drive_id && store.modo !== 'demo';
       const reintento = firmadaSinPdf ? boton('data-completar-firma="oferta"', 'Generar PDF firmado') : '';
+      const sinFirmar = !firmasDe(oferta.id).length && !oferta.pdf_firmado_drive_id;
+      const pedirFirma = sinFirmar ? boton('data-pedir-firma="oferta"', 'Pedir firma') : '';
       if (oferta.estado === 'enviada') {
-        paso2 = filaPaso('Oferta', `${entrega(oferta)} · ${precio} · el cliente puede firmarla en el portal`,
-          pdf + reintento + boton('data-marcar-oferta="aceptada"', 'Marcar aceptada') + boton('data-marcar-oferta="rechazada"', 'Marcar rechazada'), false);
+        paso2 = filaPaso('Oferta', `${entrega(oferta)} · ${precio} · pendiente de firma del cliente`,
+          pdf + reintento + pedirFirma + boton('data-marcar-oferta="aceptada"', 'Marcar aceptada') + boton('data-marcar-oferta="rechazada"', 'Marcar rechazada'), false);
       } else if (oferta.estado === 'aceptada') {
-        const como = oferta.via === 'firma' ? ' y firmada por el cliente' : oferta.via === 'portal' ? ' por el cliente en el portal' : '';
-        paso2 = filaPaso('Oferta', `Aceptada${como} · ${precio}`, pdf + reintento, true);
+        const como = oferta.pdf_firmado_drive_id || firmasDe(oferta.id).length ? ' y firmada por el cliente'
+          : oferta.via === 'portal' ? ' por el cliente en el portal' : ' a mano, sin firma del cliente';
+        paso2 = filaPaso('Oferta', `Aceptada${como} · ${precio}`, pdf + reintento + pedirFirma, true);
       } else {
         paso2 = filaPaso('Oferta', `Rechazada · ${precio}`, pdf + boton('data-oferta', 'Preparar nueva oferta'), false);
       }
@@ -692,7 +695,8 @@
         : `${entrega(nota)}, pendiente de firma en el portal`;
       const reintento = !faltanTits.length && !nota.pdf_firmado_drive_id && store.modo !== 'demo'
         ? boton('data-completar-firma="nota"', 'Generar PDF firmado', 'btn-primario') : '';
-      paso3 = filaPaso('Nota de Encargo', detalle, pdfNota + reintento + boton('data-marcar-nota', 'Marcar firmada'), false);
+      const pedirFirma = faltanTits.length ? boton('data-pedir-firma="nota"', 'Pedir firma') : '';
+      paso3 = filaPaso('Nota de Encargo', detalle, pdfNota + reintento + pedirFirma + boton('data-marcar-nota', 'Marcar firmada'), false);
     }
     else {
       paso3 = filaPaso('Nota de Encargo', oferta?.estado === 'aceptada' ? 'Lista para preparar' : 'Se habilita al aceptar la oferta',
@@ -767,16 +771,20 @@
     if (canal === 'manual' && r?.enlaces?.length) modalEnlaces(r.enlaces);
   }
 
-  function modalReenviar(op) {
+  function modalReenviar(op, motivo = 'documentacion') {
     const sinEmail = titularesDe(op.id).filter((t) => !t.email).map(nombreDe);
+    const titulo = { documentacion: 'Nuevo enlace', oferta: 'Pedir firma de la oferta', nota: 'Pedir firma de la Nota de Encargo' }[motivo];
+    const texto = motivo === 'documentacion'
+      ? 'Cada titular recibe un enlace nuevo y los anteriores dejan de funcionar.'
+      : 'Cada titular recibe un enlace nuevo para leer y firmar el documento en el portal. Los anteriores dejan de funcionar; lo ya subido o firmado se conserva.';
     abrirModal(`<form>
-      <h2>Nuevo enlace</h2>
-      <p>Cada titular recibe un enlace nuevo y los anteriores dejan de funcionar.</p>
+      <h2>${esc(titulo)}</h2>
+      <p>${esc(texto)}</p>
       ${sinEmail.length ? `<p class="campo-nota">Sin email: ${esc(sinEmail.join(', '))}. Solo se puede generar el enlace para compartirlo tú.</p>` : ''}
       <div class="modal-pie"><button class="btn btn-suave" type="button" data-cerrar>Cancelar</button>
       <button class="btn btn-suave" type="submit" name="canal" value="email"${sinEmail.length ? ' disabled' : ''}>Enviar por email</button>
       <button class="btn btn-primario" type="submit" name="canal" value="manual">Generar enlace</button></div></form>`,
-    (d) => pedirEnlace('reenviar-enlace', { operacion_id: op.id }, d.get('canal')));
+    (d) => pedirEnlace('reenviar-enlace', { operacion_id: op.id, motivo }, d.get('canal')));
   }
 
   function modalEnlace(op) {
@@ -1251,6 +1259,7 @@
       else if (d.docRechazar) modalRechazar(d.docRechazar);
       else if (d.verPdf) verPdfGuardado(d.verPdf);
       else if ('crearExpediente' in d) accionDirecta('crear-expediente', { operacion_id: estado.fichaId }, 'Expediente creado');
+      else if (d.pedirFirma) modalReenviar(opActual(), d.pedirFirma);
       else if (d.completarFirma) {
         const ref = d.completarFirma === 'oferta' ? ultimaOferta(estado.fichaId) : ultimoEncargo(estado.fichaId);
         accionDirecta('completar-firma', { tipo: d.completarFirma, referencia_id: ref.id }, 'PDF firmado guardado en Drive');
