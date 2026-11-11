@@ -11,6 +11,7 @@
     let db = null;
     try { db = JSON.parse(localStorage.getItem(CLAVE)); } catch { /* sin almacenamiento */ }
     if (!db) { db = semilla(); guardar(db); }
+    db.firmas ||= [];
     return db;
   }
   function guardar(db) {
@@ -41,7 +42,7 @@
       db.enlaces.filter((e) => e.titular_id === t.id).forEach((e) => { e.revocado = true; });
       const token = uuid().replaceAll('-', '');
       db.enlaces.push({ id: uuid(), operacion_id: op.id, titular_id: t.id, token, revocado: false });
-      const url = new URL(`../portal/#${token}`, location.href).href;
+      const url = new URL(`../portal/?demo#${token}`, location.href).href;
       if (canal === 'manual') return { titular_id: t.id, nombre: nombre(t), telefono: t.telefono || null, url };
       correo(db, op, t, 'enlace', `Tu documentación · Expediente ${op.expediente}`,
         `Hola ${t.nombre}:\n\nPara estudiar tu hipoteca necesitamos tu documentación. Entra en tu enlace personal, sube los archivos, revísalos y apruébalos cuando estén correctos.\n\nEl enlace es personal y caduca en 30 días.\n\nBajo Teja`,
@@ -254,6 +255,23 @@
     }
   }
 
+  const contratoDemo = (db, operacionId, tipo) =>
+    (tipo === 'oferta' ? db.ofertas : db.encargos).filter((x) => x.operacion_id === operacionId).at(-1) || null;
+
+  /* Como el servidor: el último contrato de cada tipo, si está abierto o ya firmado por este titular. */
+  function firmasDemo(db, operacionId, titularId) {
+    return ['oferta', 'nota'].map((tipo) => {
+      const x = contratoDemo(db, operacionId, tipo);
+      if (!x) return null;
+      const mia = db.firmas.find((f) => f.referencia_id === x.id && f.titular_id === titularId);
+      if (!mia && x.estado !== 'enviada') return null;
+      return {
+        tipo, id: x.id, titulo: tipo === 'oferta' ? 'Oferta' : 'Nota de Encargo', firmado: Boolean(mia),
+        firmado_at: mia?.created_at || null, completo: x.estado !== 'enviada', pide_consentimientos: tipo === 'nota',
+      };
+    }).filter(Boolean);
+  }
+
   const PORTAL = {
     estado(db, { token }) {
       const e = enlaceValido(db, token);
@@ -265,7 +283,32 @@
         titular: { nombre: t.nombre },
         documentos: db.docs.filter((d) => d.titular_id === t.id && d.estado !== 'sustituido'),
         oferta,
+        firmas: firmasDemo(db, op.id, t.id),
       };
+    },
+    firmar(db, { token, tipo, referencia_id, nombre, dni, consentimientos, firma }) {
+      const e = enlaceValido(db, token);
+      const x = contratoDemo(db, e.operacion_id, tipo);
+      if (!x || x.id !== referencia_id || x.estado !== 'enviada') throw new Error('Este documento ya no se puede firmar');
+      if (!nombre?.trim() || !dni?.trim() || !firma) throw new Error('Faltan datos de la firma');
+      const t = db.tits.find((y) => y.id === e.titular_id);
+      const limpio = (v) => (v || '').toUpperCase().replace(/[\s.-]/g, '');
+      if (t.dni && limpio(t.dni) !== limpio(dni)) throw new Error('El DNI no coincide con el que nos facilitaste. Revísalo o contacta con nosotros.');
+      if (db.firmas.some((f) => f.referencia_id === x.id && f.titular_id === t.id)) throw new Error('Ya has firmado este documento');
+      db.firmas.push({
+        id: uuid(), operacion_id: e.operacion_id, titular_id: t.id, tipo, referencia_id: x.id,
+        nombre: nombre.trim(), dni: limpio(dni), consentimientos: consentimientos || null, created_at: ahora(),
+      });
+      const tits = tituLaresOp(db, e.operacion_id);
+      const hechas = db.firmas.filter((f) => f.referencia_id === x.id);
+      const completo = tipo === 'oferta' ? true : tits.every((y) => hechas.some((f) => f.titular_id === y.id));
+      if (completo && tipo === 'oferta') Object.assign(x, { estado: 'aceptada', via: 'firma', respondida_por: t.id, respondida_at: ahora() });
+      if (completo && tipo === 'nota') {
+        Object.assign(x, { estado: 'firmada', firmado_at: ahora() });
+        const op = db.ops.find((o) => o.id === e.operacion_id);
+        if (op.etapa < 4) op.etapa = 4;
+      }
+      return { firmado: true, completo };
     },
     subir(db, { token, documento_id, archivo_nombre }) {
       const e = enlaceValido(db, token);

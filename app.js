@@ -41,7 +41,7 @@
 
   const LOGO = `<svg class="logo" viewBox="0 0 52 40" aria-hidden="true"><path class="logo-chimenea" d="M26 15V7"/><path class="logo-tejado" d="M10 30l16-15 16 15"/></svg>`;
 
-  const estado = { ops: [], tits: [], ests: [], coms: [], docs: [], ofertas: [], encargos: [], envios: [], empresa: {}, borradores: {}, usuario: null, busqueda: '', vista: 'tablero', fichaId: null, pestana: 'datos' };
+  const estado = { ops: [], tits: [], ests: [], coms: [], docs: [], ofertas: [], encargos: [], envios: [], empresa: {}, firmas: [], borradores: {}, usuario: null, busqueda: '', vista: 'tablero', fichaId: null, pestana: 'datos' };
 
   /* ---------- utilidades ---------- */
   const palabras = (t) => (t || '').trim().split(/\s+/).filter(Boolean).length;
@@ -57,6 +57,7 @@
   const docsDe = (id) => estado.docs.filter((d) => d.operacion_id === id && d.estado !== 'sustituido');
   const ultimaOferta = (id) => estado.ofertas.filter((o) => o.operacion_id === id).at(-1);
   const ultimoEncargo = (id) => estado.encargos.filter((e) => e.operacion_id === id).at(-1);
+  const firmasDe = (referenciaId) => (estado.firmas || []).filter((f) => f.referencia_id === referenciaId);
   const enviosDe = (id) => estado.envios.filter((e) => e.operacion_id === id).reverse();
   const progreso = (id) => {
     const utiles = docsDe(id).filter((d) => d.estado !== 'no_aplica');
@@ -664,21 +665,35 @@
         boton('data-oferta', 'Preparar oferta', p.listo ? 'btn-primario' : 'btn-suave'), false);
     } else {
       const precio = `${euros(oferta.honorarios)} ${oferta.iva_incluido ? 'IVA incluido' : `+ ${oferta.iva_pct} % IVA`}`;
-      const pdf = botonPdf(oferta.pdf_drive_id, oferta.id, 'Ver PDF');
+      const pdf = botonPdf(oferta.pdf_drive_id, oferta.id, 'Ver PDF') + botonPdf(oferta.pdf_firmado_drive_id, null, 'Ver firmada');
+      const firmadaSinPdf = firmasDe(oferta.id).length > 0 && !oferta.pdf_firmado_drive_id && store.modo !== 'demo';
+      const reintento = firmadaSinPdf ? boton('data-completar-firma="oferta"', 'Generar PDF firmado') : '';
       if (oferta.estado === 'enviada') {
-        paso2 = filaPaso('Oferta', `${entrega(oferta)} · ${precio}`,
-          pdf + boton('data-marcar-oferta="aceptada"', 'Marcar aceptada') + boton('data-marcar-oferta="rechazada"', 'Marcar rechazada'), false);
+        paso2 = filaPaso('Oferta', `${entrega(oferta)} · ${precio} · el cliente puede firmarla en el portal`,
+          pdf + reintento + boton('data-marcar-oferta="aceptada"', 'Marcar aceptada') + boton('data-marcar-oferta="rechazada"', 'Marcar rechazada'), false);
       } else if (oferta.estado === 'aceptada') {
-        paso2 = filaPaso('Oferta', `Aceptada${oferta.via === 'portal' ? ' por el cliente en el portal' : ''} · ${precio}`, pdf, true);
+        const como = oferta.via === 'firma' ? ' y firmada por el cliente' : oferta.via === 'portal' ? ' por el cliente en el portal' : '';
+        paso2 = filaPaso('Oferta', `Aceptada${como} · ${precio}`, pdf + reintento, true);
       } else {
         paso2 = filaPaso('Oferta', `Rechazada · ${precio}`, pdf + boton('data-oferta', 'Preparar nueva oferta'), false);
       }
     }
 
     let paso3;
-    const pdfNota = nota ? botonPdf(nota.pdf_drive_id, nota.id, 'Ver PDF') : '';
-    if (nota?.estado === 'firmada') paso3 = filaPaso('Nota de Encargo', 'Firmada', pdfNota, true);
-    else if (nota) paso3 = filaPaso('Nota de Encargo', `${entrega(nota)}, pendiente de firma`, pdfNota + boton('data-marcar-nota', 'Marcar firmada'), false);
+    const pdfNota = nota ? botonPdf(nota.pdf_drive_id, nota.id, 'Ver PDF') + botonPdf(nota.pdf_firmado_drive_id, null, 'Ver firmada') : '';
+    const firmasNota = nota ? firmasDe(nota.id) : [];
+    const totalTits = titularesDe(op.id).length;
+    const faltanTits = titularesDe(op.id).filter((t) => !firmasNota.some((f) => f.titular_id === t.id)).map(nombreDe);
+    if (nota?.estado === 'firmada') {
+      paso3 = filaPaso('Nota de Encargo', firmasNota.length ? `Firmada en el portal por ${firmasNota.length} de ${totalTits}` : 'Firmada', pdfNota, true);
+    } else if (nota) {
+      const detalle = firmasNota.length
+        ? `Firmada por ${firmasNota.length} de ${totalTits}${faltanTits.length ? ` · falta ${faltanTits.join(', ')}` : ''}`
+        : `${entrega(nota)}, pendiente de firma en el portal`;
+      const reintento = !faltanTits.length && !nota.pdf_firmado_drive_id && store.modo !== 'demo'
+        ? boton('data-completar-firma="nota"', 'Generar PDF firmado', 'btn-primario') : '';
+      paso3 = filaPaso('Nota de Encargo', detalle, pdfNota + reintento + boton('data-marcar-nota', 'Marcar firmada'), false);
+    }
     else {
       paso3 = filaPaso('Nota de Encargo', oferta?.estado === 'aceptada' ? 'Lista para preparar' : 'Se habilita al aceptar la oferta',
         oferta?.estado === 'aceptada' ? boton('data-nota', 'Preparar Nota', 'btn-primario') : '', false);
@@ -1236,6 +1251,10 @@
       else if (d.docRechazar) modalRechazar(d.docRechazar);
       else if (d.verPdf) verPdfGuardado(d.verPdf);
       else if ('crearExpediente' in d) accionDirecta('crear-expediente', { operacion_id: estado.fichaId }, 'Expediente creado');
+      else if (d.completarFirma) {
+        const ref = d.completarFirma === 'oferta' ? ultimaOferta(estado.fichaId) : ultimoEncargo(estado.fichaId);
+        accionDirecta('completar-firma', { tipo: d.completarFirma, referencia_id: ref.id }, 'PDF firmado guardado en Drive');
+      }
       else if ('docNuevo' in d) modalSubirDocumento(opActual());
       else if (d.docSubir) modalSubirDocumento(opActual(), d.docSubir);
       else if (d.docTipo) modalTipoDocumento(d.docTipo);

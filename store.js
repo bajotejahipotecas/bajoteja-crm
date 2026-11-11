@@ -60,7 +60,7 @@
         sb.auth.onAuthStateChange((evento) => { if (evento === 'SIGNED_OUT') fn(); });
       },
       async cargar() {
-        const [ops, tits, ests, coms, docs, ofertas, encargos, envios, empresa] = await Promise.all([
+        const [ops, tits, ests, coms, docs, ofertas, encargos, envios, empresa, firmas] = await Promise.all([
           sb.from('operaciones').select('*'),
           sb.from('titulares').select('*'),
           sb.from('estudios').select('*').order('created_at'),
@@ -70,10 +70,13 @@
           sb.from('encargos').select('*').order('created_at'),
           sb.from('envios_email').select('*').order('created_at'),
           sb.from('empresa').select('*').maybeSingle(),
+          /* Sin el trazo de la firma: pesa y el CRM no lo necesita. */
+          sb.from('firmas').select('id,operacion_id,titular_id,tipo,referencia_id,nombre,created_at').order('created_at'),
         ]);
         return {
           ops: ok(ops), tits: ok(tits), ests: ok(ests), coms: ok(coms), docs: ok(docs),
           ofertas: ok(ofertas), encargos: ok(encargos), envios: ok(envios), empresa: ok(empresa) || {},
+          firmas: ok(firmas),
         };
       },
       async crear(tabla, fila) {
