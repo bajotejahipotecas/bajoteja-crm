@@ -384,13 +384,16 @@
     $('[data-cerrar]', m)?.addEventListener('click', () => m.close());
     $('form', m).addEventListener('submit', async (e) => {
       e.preventDefault();
-      const boton = $('button[type=submit]', m);
-      boton.disabled = true;
+      const botones = $$('button[type=submit]', m);
+      botones.forEach((b) => { b.disabled = true; });
       try {
-        await alEnviar(new FormData(e.target));
-        m.close();
+        const datos = new FormData(e.target);
+        /* El botón pulsado (p. ej. "Generar PDF" o "Enviar por email") se añade a mano: no todos los navegadores lo incluyen. */
+        if (e.submitter?.name) datos.set(e.submitter.name, e.submitter.value);
+        await alEnviar(datos);
+        if (m.open) m.close();
       } catch (err) {
-        boton.disabled = false;
+        botones.forEach((b) => { b.disabled = false; });
         fallo(err);
       }
     });
@@ -571,42 +574,58 @@
       <div class="exp-acciones">${acciones}</div></div>`;
   }
 
-  function botonVer(d) {
-    if (d.drive_id) {
-      return `<a class="enlace" href="https://drive.google.com/file/d/${encodeURIComponent(d.drive_id)}/view" target="_blank" rel="noopener noreferrer">Ver</a>`;
-    }
-    return store.modo === 'demo' ? `<button class="enlace" type="button" data-doc-ver="${esc(d.id)}">Ver</button>` : '';
-  }
-
-  async function verDocumentoDemo(id) {
-    const pdf = await window.DemoBackend.leerPdf(id);
-    if (!pdf) {
-      aviso('Documento de ejemplo sin PDF. Prueba con uno subido desde el portal.', true);
-      return;
-    }
-    const doc = estado.docs.find((d) => d.id === id);
-    const url = URL.createObjectURL(new Blob([pdf], { type: 'application/pdf' }));
+  /* Visor de PDF dentro de la página, con descarga. Sirve para documentos y para PDF generados. */
+  function abrirVisor(titulo, blob, nombreArchivo) {
+    const url = URL.createObjectURL(new Blob([blob], { type: 'application/pdf' }));
     const visor = $('#visor');
-    visor.innerHTML = `<header><strong>${esc(doc.tipo)}</strong>
-      <a class="enlace" href="${esc(url)}" download="${esc(doc.tipo)}.pdf">Descargar</a>
+    visor.innerHTML = `<header><strong>${esc(titulo)}</strong>
+      <a class="enlace" href="${esc(url)}" download="${esc(nombreArchivo)}">Descargar</a>
       <button class="cerrar" type="button" aria-label="Cerrar">×</button></header>
-      <iframe src="${esc(url)}" title="${esc(doc.tipo)}"></iframe>`;
+      <iframe src="${esc(url)}" title="${esc(titulo)}"></iframe>`;
     $('.cerrar', visor).addEventListener('click', () => visor.close());
     visor.addEventListener('close', () => URL.revokeObjectURL(url), { once: true });
     visor.showModal();
   }
 
+  /* Enlace a Drive en real; en la demo, visor con el PDF guardado en este navegador. */
+  function botonPdf(driveId, idDemo, texto = 'Ver') {
+    const enlace = store.enlaceDrive(driveId);
+    if (enlace) return `<a class="enlace" href="${esc(enlace)}" target="_blank" rel="noopener noreferrer">${esc(texto)}</a>`;
+    return store.modo === 'demo' && idDemo ? `<button class="enlace" type="button" data-ver-pdf="${esc(idDemo)}">${esc(texto)}</button>` : '';
+  }
+
+  async function verPdfGuardado(id) {
+    const pdf = await store.pdfGuardado(id);
+    if (!pdf) {
+      aviso('Documento de ejemplo sin PDF. Prueba con uno subido desde el portal o desde aquí.', true);
+      return;
+    }
+    const doc = estado.docs.find((d) => d.id === id);
+    const of = estado.ofertas.find((o) => o.id === id);
+    const titulo = doc ? doc.tipo : of ? 'Oferta' : 'Nota de Encargo';
+    abrirVisor(titulo, pdf, `${titulo}.pdf`);
+  }
+
   function listaDocumentos(op) {
+    const enlace = (dato, id, texto) => `<button class="enlace" type="button" ${dato}="${esc(id)}">${esc(texto)}</button>`;
     return titularesDe(op.id).map((t) => {
       const docs = docsDe(op.id).filter((d) => d.titular_id === t.id);
       if (!docs.length) return '';
-      return `<h4>${esc(nombreDe(t))}</h4><ul class="doc-lista">${docs.map((d) => `<li class="doc-${d.estado}">
-        <span class="doc-tipo">${esc(d.tipo)}${d.version > 1 ? ` · v${esc(d.version)}` : ''}</span>
-        <span class="doc-estado">${esc(ESTADO_DOC[d.estado])}</span>
-        ${d.estado === 'pendiente' ? `<button class="enlace" type="button" data-doc-noaplica="${esc(d.id)}">No aplica</button>` : ''}
-        ${d.estado === 'no_aplica' ? `<button class="enlace" type="button" data-doc-pedir="${esc(d.id)}">Pedir</button>` : ''}
-        ${d.estado === 'aprobado' ? `${botonVer(d)}<button class="enlace" type="button" data-doc-rechazar="${esc(d.id)}">Pedir de nuevo</button>` : ''}
-      </li>`).join('')}</ul>`;
+      return `<h4>${esc(nombreDe(t))}</h4><ul class="doc-lista">${docs.map((d) => {
+        let acciones = '';
+        if (d.estado === 'pendiente') acciones = enlace('data-doc-subir', d.id, 'Subir') + enlace('data-doc-noaplica', d.id, 'No aplica');
+        else if (d.estado === 'no_aplica') acciones = enlace('data-doc-subir', d.id, 'Subir') + enlace('data-doc-pedir', d.id, 'Pedir');
+        else if (d.estado === 'aprobado') {
+          acciones = botonPdf(d.drive_id, d.id) + enlace('data-doc-subir', d.id, 'Sustituir') + enlace('data-doc-tipo', d.id, 'Cambiar tipo')
+            + enlace('data-doc-quitar', d.id, 'Quitar') + enlace('data-doc-rechazar', d.id, 'Pedir al cliente');
+        }
+        const origen = d.origen === 'gestor' ? ' · subido por el gestor' : '';
+        return `<li class="doc-${d.estado}">
+          <span class="doc-tipo">${esc(d.tipo)}${d.version > 1 ? ` · v${esc(d.version)}` : ''}</span>
+          <span class="doc-estado">${esc(ESTADO_DOC[d.estado])}${esc(origen)}</span>
+          <span class="doc-acciones">${acciones}</span>
+        </li>`;
+      }).join('')}</ul>`;
     }).join('');
   }
 
@@ -632,37 +651,41 @@
       : '<h3 class="seccion">Expediente</h3>';
 
     const paso1 = op.expediente
-      ? filaPaso('Documentación', p.listo ? `Completa: ${p.aprobados} de ${p.total} aprobados` : `${p.aprobados} de ${p.total} aprobados`,
-        boton('data-enlace', 'Añadir documentos') + boton('data-reenviar', 'Reenviar enlace'), p.listo)
-      : filaPaso('Documentación', 'Crea el número de expediente, la carpeta y envía el enlace al cliente',
-        boton('data-enlace', 'Enviar enlace', 'btn-primario'), false);
+      ? filaPaso('Documentación', p.total ? `${p.listo ? 'Completa: ' : ''}${p.aprobados} de ${p.total} aprobados` : 'Sin documentos pedidos',
+        boton('data-enlace', 'Pedir al cliente') + boton('data-reenviar', 'Reenviar enlace'), p.listo)
+      : filaPaso('Documentación', 'Crea el número y la carpeta, o envía directamente el enlace al cliente',
+        boton('data-crear-expediente', 'Crear expediente') + boton('data-enlace', 'Enviar enlace', 'btn-primario'), false);
 
+    const entrega = (x) => (x.canal === 'manual' ? 'Generada en PDF' : 'Enviada por email');
     let paso2;
     if (!oferta) {
-      paso2 = filaPaso('Oferta', p.listo ? 'Listo para enviar' : 'Pendiente de documentación',
-        op.expediente ? boton('data-oferta', 'Enviar oferta', p.listo ? 'btn-primario' : 'btn-suave') : '', false);
+      paso2 = filaPaso('Oferta', p.listo ? 'Lista para preparar' : 'Pendiente de documentación',
+        boton('data-oferta', 'Preparar oferta', p.listo ? 'btn-primario' : 'btn-suave'), false);
     } else {
       const precio = `${euros(oferta.honorarios)} ${oferta.iva_incluido ? 'IVA incluido' : `+ ${oferta.iva_pct} % IVA`}`;
+      const pdf = botonPdf(oferta.pdf_drive_id, oferta.id, 'Ver PDF');
       if (oferta.estado === 'enviada') {
-        paso2 = filaPaso('Oferta', `Enviada · ${precio}`,
-          boton('data-marcar-oferta="aceptada"', 'Marcar aceptada') + boton('data-marcar-oferta="rechazada"', 'Marcar rechazada'), false);
+        paso2 = filaPaso('Oferta', `${entrega(oferta)} · ${precio}`,
+          pdf + boton('data-marcar-oferta="aceptada"', 'Marcar aceptada') + boton('data-marcar-oferta="rechazada"', 'Marcar rechazada'), false);
       } else if (oferta.estado === 'aceptada') {
-        paso2 = filaPaso('Oferta', `Aceptada${oferta.via === 'portal' ? ' por el cliente en el portal' : ''} · ${precio}`, '', true);
+        paso2 = filaPaso('Oferta', `Aceptada${oferta.via === 'portal' ? ' por el cliente en el portal' : ''} · ${precio}`, pdf, true);
       } else {
-        paso2 = filaPaso('Oferta', `Rechazada · ${precio}`, boton('data-oferta', 'Enviar nueva oferta'), false);
+        paso2 = filaPaso('Oferta', `Rechazada · ${precio}`, pdf + boton('data-oferta', 'Preparar nueva oferta'), false);
       }
     }
 
     let paso3;
-    if (nota?.estado === 'firmada') paso3 = filaPaso('Nota de Encargo', 'Firmada', '', true);
-    else if (nota) paso3 = filaPaso('Nota de Encargo', 'Enviada, pendiente de firma', boton('data-marcar-nota', 'Marcar firmada'), false);
+    const pdfNota = nota ? botonPdf(nota.pdf_drive_id, nota.id, 'Ver PDF') : '';
+    if (nota?.estado === 'firmada') paso3 = filaPaso('Nota de Encargo', 'Firmada', pdfNota, true);
+    else if (nota) paso3 = filaPaso('Nota de Encargo', `${entrega(nota)}, pendiente de firma`, pdfNota + boton('data-marcar-nota', 'Marcar firmada'), false);
     else {
-      paso3 = filaPaso('Nota de Encargo', oferta?.estado === 'aceptada' ? 'Lista para enviar' : 'Se habilita al aceptar la oferta',
-        oferta?.estado === 'aceptada' ? boton('data-nota', 'Enviar Nota', 'btn-primario') : '', false);
+      paso3 = filaPaso('Nota de Encargo', oferta?.estado === 'aceptada' ? 'Lista para preparar' : 'Se habilita al aceptar la oferta',
+        oferta?.estado === 'aceptada' ? boton('data-nota', 'Preparar Nota', 'btn-primario') : '', false);
     }
 
-    const docs = docsDe(op.id).length
-      ? `<details class="exp-detalle" open><summary>Documentos</summary>${listaDocumentos(op)}</details>` : '';
+    const docs = `<details class="exp-detalle" open><summary>Documentos</summary>
+      <div class="docs-cab"><button class="btn btn-suave" type="button" data-doc-nuevo>Subir documento</button></div>
+      ${listaDocumentos(op) || '<p class="campo-nota">Aún no hay documentos.</p>'}</details>`;
     return `<section class="expediente">${cabecera}${paso1}${paso2}${paso3}${docs}${listaEnvios(op)}</section>`;
   }
 
@@ -739,7 +762,8 @@
     const p = progreso(op.id);
     const select = (lista, valor) => `<option value="">Selecciona…</option>${lista.map((x) => `<option${x === valor ? ' selected' : ''}>${esc(x)}</option>`).join('')}`;
     abrirModal(`<form>
-      <h2>Enviar oferta</h2>
+      <h2>Preparar oferta</h2>
+      <p>Genera el PDF para enviarlo tú (WhatsApp, en mano…) o envíalo por email a todos los titulares. En los dos casos queda registrada.</p>
       ${p.listo ? '' : `<p class="nota-error">La documentación no está completa: ${p.aprobados} de ${p.total} aprobados.</p>`}
       <div class="rejilla">
         <label class="campo"><span>Honorarios</span><div class="con-sufijo"><input name="honorarios" type="number" min="0" step="any" required value="${esc(previa?.honorarios)}"><em>€</em></div></label>
@@ -750,16 +774,19 @@
         <label class="campo campo-ancho"><span>Mensaje para el cliente (opcional)</span><textarea name="mensaje" rows="3"></textarea></label>
       </div>
       <div class="modal-pie"><button class="btn btn-suave" type="button" data-cerrar>Cancelar</button>
-      <button class="btn btn-primario" type="submit">Enviar oferta</button></div></form>`, async (d) => {
+      <button class="btn btn-suave" type="submit" name="modo" value="email">Enviar por email</button>
+      <button class="btn btn-primario" type="submit" name="modo" value="pdf">Generar PDF</button></div></form>`, async (d) => {
       const cambios = {
         tipo_financiacion: d.get('tipo_financiacion'), finalidad: d.get('finalidad').trim(),
         importe_solicitado: Number(d.get('importe_solicitado')),
       };
       Object.assign(op, await store.actualizar('operaciones', op.id, cambios));
-      await ejecutar('enviar-oferta', {
+      const datos = {
         operacion_id: op.id, honorarios: Number(d.get('honorarios')), iva_incluido: d.get('iva') === 'si',
         iva_pct: 21, mensaje: d.get('mensaje').trim() || null,
-      }, 'Oferta enviada');
+      };
+      if (d.get('modo') === 'pdf') await generarPdf('generar-oferta', datos, 'Oferta');
+      else await ejecutar('enviar-oferta', datos, 'Oferta enviada');
     });
   }
 
@@ -788,8 +815,8 @@
       return;
     }
     abrirModal(`<form>
-      <h2>Enviar Nota de Encargo</h2>
-      <p>Se genera el PDF con los datos del expediente y se envía a todos los titulares.</p>
+      <h2>Preparar Nota de Encargo</h2>
+      <p>Se genera el PDF con los datos del expediente. Puedes descargarlo para enviarlo tú o mandarlo por email a todos los titulares.</p>
       <div class="rejilla">
         <label class="campo campo-ancho"><span>Lugar</span><input name="lugar" required value="${esc(estado.empresa.ciudad)}"></label>
         <label class="campo"><span>Pago antes de firma (días)</span><input name="plazo" type="number" min="0" step="1" required value="3"></label>
@@ -797,11 +824,14 @@
         <label class="campo"><span>Plazo de desistimiento (días)</span><input name="dias" type="number" min="0" step="1" required value="14"></label>
       </div>
       <div class="modal-pie"><button class="btn btn-suave" type="button" data-cerrar>Cancelar</button>
-      <button class="btn btn-primario" type="submit">Enviar Nota</button></div></form>`, async (d) => {
-      await ejecutar('enviar-nota', {
+      <button class="btn btn-suave" type="submit" name="modo" value="email">Enviar por email</button>
+      <button class="btn btn-primario" type="submit" name="modo" value="pdf">Generar PDF</button></div></form>`, async (d) => {
+      const datos = {
         operacion_id: op.id, lugar: d.get('lugar').trim(), plazo_pago_dias: Number(d.get('plazo')),
         pct_desistimiento: Number(d.get('pct')), dias_desistimiento: Number(d.get('dias')),
-      }, 'Nota enviada');
+      };
+      if (d.get('modo') === 'pdf') await generarPdf('generar-nota', datos, 'Nota de Encargo');
+      else await ejecutar('enviar-nota', datos, 'Nota enviada');
     });
   }
 
@@ -821,6 +851,103 @@
         .map((k) => [k, d.get(k).trim() || null]));
       estado.empresa = await store.guardarEmpresa(cambios);
       aviso('Datos guardados');
+    });
+  }
+
+  /* Genera el PDF sin enviar email, lo registra y lo abre para descargar. */
+  async function generarPdf(nombre, datos, titulo) {
+    let r;
+    try {
+      r = await store.accion(nombre, datos);
+    } catch (err) {
+      err.visible = true;
+      throw err;
+    }
+    $('#modal').close();
+    await refrescar();
+    pintar();
+    if (estado.fichaId) pintarFicha();
+    const pdf = await store.pdfGenerado(r);
+    if (pdf) abrirVisor(titulo, pdf, r.nombre);
+    aviso(`${titulo} generada. Descárgala para enviarla.`);
+  }
+
+  const DOCS_ACEPTADOS = '.pdf,.doc,.docx,.jpg,.jpeg,.png,.webp';
+  async function prepararArchivo(archivos) {
+    const lista = [...archivos];
+    const error = (m) => Object.assign(new Error(m), { visible: true });
+    if (!lista.length) throw error('Elige un archivo.');
+    if (lista.every((a) => /\.(jpe?g|png|webp)$/i.test(a.name))) {
+      try {
+        return { archivo: await window.PortalPdf.desdeImagenes(lista), nombre: `${lista[0].name.replace(/\.[^.]+$/, '')}.pdf` };
+      } catch {
+        throw error('No se ha podido leer la imagen. Usa JPG, PNG o PDF.');
+      }
+    }
+    if (lista.length > 1) throw error('Solo se pueden juntar varias fotos. Un PDF o Word va de uno en uno.');
+    const [a] = lista;
+    if (/\.pdf$/i.test(a.name) && a.size <= 25 * 1024 * 1024) return { archivo: a, nombre: a.name };
+    if (/\.docx?$/i.test(a.name) && a.size <= 10 * 1024 * 1024) return { archivo: a, nombre: a.name };
+    throw error('Formato no admitido o demasiado grande. PDF hasta 25 MB, Word hasta 10 MB, o fotos.');
+  }
+
+  function modalSubirDocumento(op, docId) {
+    const doc = docId && estado.docs.find((d) => d.id === docId);
+    const tits = titularesDe(op.id);
+    if (!tits.length) { aviso('Añade al menos un titular.', true); return; }
+    const tipos = [...new Set(Object.values(DOCUMENTOS_PERFIL).flat())];
+    const titulo = !doc ? 'Subir documento' : doc.estado === 'aprobado' ? `Sustituir: ${doc.tipo}` : `Subir: ${doc.tipo}`;
+    abrirModal(`<form>
+      <h2>${esc(titulo)}</h2>
+      <p>${doc?.estado === 'aprobado' ? 'La versión anterior se conserva en Drive. ' : ''}Se guarda en PDF en la carpeta del expediente${op.expediente ? '' : ', que se crea ahora'}. Fotos y Word se convierten a PDF.</p>
+      ${doc ? '' : `<div class="rejilla">
+        <label class="campo"><span>Titular</span><select name="titular_id">${tits.map((t) => `<option value="${esc(t.id)}">${esc(nombreDe(t))}</option>`).join('')}</select></label>
+        <label class="campo"><span>Tipo de documento</span><input name="tipo" list="lista-tipos-doc" required autocomplete="off"></label>
+        <datalist id="lista-tipos-doc">${tipos.map((x) => `<option value="${esc(x)}"></option>`).join('')}</datalist>
+      </div>`}
+      <label class="campo"><span>Archivo (varias fotos del mismo documento se unen en un PDF)</span><input name="archivo" type="file" multiple accept="${DOCS_ACEPTADOS}" required></label>
+      <div class="modal-pie"><button class="btn btn-suave" type="button" data-cerrar>Cancelar</button>
+      <button class="btn btn-primario" type="submit">Subir</button></div></form>`, async (d) => {
+      const { archivo, nombre } = await prepararArchivo($('#modal [name=archivo]').files);
+      try {
+        await store.subirDocumento({
+          operacion_id: op.id,
+          titular_id: doc ? doc.titular_id : d.get('titular_id'),
+          tipo: doc ? doc.tipo : d.get('tipo').trim(),
+          documento_id: doc?.id || null,
+          archivo, nombre,
+        });
+      } catch (err) {
+        err.visible = true;
+        throw err;
+      }
+      await refrescar();
+      pintar();
+      pintarFicha();
+      aviso('Documento guardado');
+    });
+  }
+
+  function modalTipoDocumento(id) {
+    const doc = estado.docs.find((d) => d.id === id);
+    abrirModal(`<form>
+      <h2>Cambiar tipo de documento</h2>
+      <label class="campo"><span>Tipo</span><input name="tipo" required value="${esc(doc.tipo)}"></label>
+      <div class="modal-pie"><button class="btn btn-suave" type="button" data-cerrar>Cancelar</button>
+      <button class="btn btn-primario" type="submit">Guardar</button></div></form>`, async (d) => {
+      await ejecutar('cambiar-tipo-documento', { documento_id: id, tipo: d.get('tipo').trim() }, 'Tipo cambiado');
+    });
+  }
+
+  function modalQuitarDocumento(id) {
+    const doc = estado.docs.find((d) => d.id === id);
+    abrirModal(`<form>
+      <h2>Quitar: ${esc(doc.tipo)}</h2>
+      <p>Deja de contar en el expediente. El PDF se conserva en Drive.</p>
+      <label class="campo"><span>Motivo</span><input name="motivo" required></label>
+      <div class="modal-pie"><button class="btn btn-suave" type="button" data-cerrar>Cancelar</button>
+      <button class="btn btn-peligro" type="submit">Quitar</button></div></form>`, async (d) => {
+      await ejecutar('quitar-documento', { documento_id: id, motivo: d.get('motivo').trim() }, 'Documento quitado');
     });
   }
 
@@ -1062,7 +1189,12 @@
       else if (d.docNoaplica) accionDirecta('documento-no-aplica', { documento_id: d.docNoaplica, no_aplica: true });
       else if (d.docPedir) accionDirecta('documento-no-aplica', { documento_id: d.docPedir, no_aplica: false });
       else if (d.docRechazar) modalRechazar(d.docRechazar);
-      else if (d.docVer) verDocumentoDemo(d.docVer);
+      else if (d.verPdf) verPdfGuardado(d.verPdf);
+      else if ('crearExpediente' in d) accionDirecta('crear-expediente', { operacion_id: estado.fichaId }, 'Expediente creado');
+      else if ('docNuevo' in d) modalSubirDocumento(opActual());
+      else if (d.docSubir) modalSubirDocumento(opActual(), d.docSubir);
+      else if (d.docTipo) modalTipoDocumento(d.docTipo);
+      else if (d.docQuitar) modalQuitarDocumento(d.docQuitar);
       else if (d.envio) modalEnvio(d.envio);
       else if (d.quitarComentario) {
         confirmar({

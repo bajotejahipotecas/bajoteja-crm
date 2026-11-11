@@ -11,6 +11,15 @@
 
   function supabaseStore() {
     const sb = window.supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_KEY);
+    async function invocar(body) {
+      const { data, error } = await sb.functions.invoke('crm', { body, region: cfg.SUPABASE_REGION || undefined });
+      if (error) {
+        let mensaje = 'No se ha podido completar la acción.';
+        try { mensaje = (await error.context.json()).error || mensaje; } catch { /* respuesta sin JSON */ }
+        throw new Error(mensaje);
+      }
+      return data;
+    }
     const ok = ({ data, error }) => { if (error) throw error; return data; };
     const autorizado = async () => ok(await sb.rpc('es_equipo')) === true;
     const rechazar = async () => {
@@ -80,17 +89,26 @@
         return ok(await sb.from('empresa').update(cambios).eq('id', true).select().single());
       },
       async accion(nombre, datos) {
-        const { data, error } = await sb.functions.invoke('crm', {
-          body: { accion: nombre, ...datos },
-          region: cfg.SUPABASE_REGION || undefined,
-        });
-        if (error) {
-          let mensaje = 'No se ha podido completar la acción.';
-          try { mensaje = (await error.context.json()).error || mensaje; } catch { /* respuesta sin JSON */ }
-          throw new Error(mensaje);
-        }
-        return data;
+        return invocar({ accion: nombre, ...datos });
       },
+      /* Subida del gestor: multipart con el PDF ya preparado en el navegador. */
+      async subirDocumento({ operacion_id, titular_id, tipo, documento_id, archivo, nombre }) {
+        const form = new FormData();
+        form.append('accion', 'subir-documento');
+        form.append('operacion_id', operacion_id);
+        form.append('titular_id', titular_id);
+        form.append('tipo', tipo);
+        if (documento_id) form.append('documento_id', documento_id);
+        form.append('archivo', archivo, nombre);
+        return invocar(form);
+      },
+      /* PDF devuelto por generar-oferta / generar-nota. */
+      async pdfGenerado(r) {
+        const bytes = Uint8Array.from(atob(r.pdf_base64), (c) => c.charCodeAt(0));
+        return new Blob([bytes], { type: 'application/pdf' });
+      },
+      enlaceDrive: (id) => (id ? `https://drive.google.com/file/d/${encodeURIComponent(id)}/view` : null),
+      async pdfGuardado() { return null; },
     };
   }
 
@@ -140,7 +158,20 @@
       async guardarEmpresa(cambios) {
         return demo.conDb((db) => Object.assign(db.empresa, cambios));
       },
-      async accion(nombre, datos) { return demo.crm(nombre, datos); },
+      async accion(nombre, datos) {
+        const r = demo.crm(nombre, datos);
+        if (r?.lineas) await demo.guardarPdf(r.id_pdf, window.PortalPdf.desdeTexto(r.lineas));
+        return r;
+      },
+      async subirDocumento({ archivo, nombre, ...datos }) {
+        const r = demo.crm('subir-documento', { ...datos, archivo_nombre: nombre });
+        const pdf = /\.docx?$/i.test(nombre) ? await window.PortalPdf.pdfAvisoDemo(nombre) : archivo;
+        await demo.guardarPdf(r.id, pdf);
+        return r;
+      },
+      async pdfGenerado(r) { return demo.leerPdf(r.id_pdf); },
+      enlaceDrive: () => null,
+      async pdfGuardado(id) { return demo.leerPdf(id); },
     };
   }
 

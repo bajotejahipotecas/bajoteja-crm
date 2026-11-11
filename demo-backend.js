@@ -47,19 +47,128 @@
     });
   }
 
+  function asegurarExpediente(db, op) {
+    if (op.expediente) return;
+    const t = tituLaresOp(db, op.id)[0];
+    const anio = new Date().getFullYear();
+    db.contadores[anio] = (db.contadores[anio] || 0) + 1;
+    op.expediente = String(anio % 100).padStart(2, '0') + String(db.contadores[anio]).padStart(3, '0');
+    op.alias = op.alias || sinAcentos(((t?.apellidos || t?.nombre || 'CLIENTE').trim().split(/\s+/)[0])).toUpperCase();
+    op.drive_folder_id = null;
+  }
+
+  const importeTexto = (o) => `${importe(o.honorarios)} € (${o.iva_incluido ? 'IVA incluido' : `IVA no incluido, ${o.iva_pct} %`})`;
+
+  function lineasOferta(db, op, o) {
+    return [
+      `Propuesta de servicios · Expediente ${op.expediente}`,
+      'DEMO: documento simulado. El real sale de la plantilla de Google Docs.',
+      '',
+      ...tituLaresOp(db, op.id).map((t) => `Solicitante: ${nombre(t)}`),
+      `Tipo de financiación: ${op.tipo_financiacion || '-'}`,
+      `Finalidad: ${op.finalidad || '-'}`,
+      `Importe aproximado: ${op.importe_solicitado ? `${importe(op.importe_solicitado)} €` : '-'}`,
+      `Honorarios: ${importeTexto(o)}`,
+      ...(o.mensaje ? ['', o.mensaje] : []),
+    ];
+  }
+
+  function lineasNota(db, op, e, o) {
+    return [
+      `Nota de Encargo · Expediente ${op.expediente}`,
+      'DEMO: documento simulado. El real sale de la plantilla de Google Docs.',
+      '',
+      `Lugar: ${e.lugar}`,
+      ...tituLaresOp(db, op.id).map((t) => `Solicitante: ${nombre(t)} · DNI ${t.dni || '-'}`),
+      `Intermediario: ${db.empresa.razon_social || '-'} · ${db.empresa.cif || '-'}`,
+      `Honorarios: ${importeTexto(o)}`,
+      `Pago antes de firma: ${e.plazo_pago_dias} días · Desistimiento tras tasación: ${e.pct_desistimiento} %`,
+      `Plazo de desistimiento: ${e.dias_desistimiento} días`,
+    ];
+  }
+
+  function nuevaOferta(db, { operacion_id, honorarios, iva_incluido, iva_pct, mensaje }, canal) {
+    const op = db.ops.find((o) => o.id === operacion_id);
+    asegurarExpediente(db, op);
+    const o = {
+      id: uuid(), operacion_id, honorarios, iva_incluido, iva_pct, mensaje: mensaje || null,
+      estado: 'enviada', canal, via: null, created_at: ahora(),
+    };
+    db.ofertas.push(o);
+    if (op.etapa < 3) op.etapa = 3;
+    return { op, o };
+  }
+
+  function nuevaNota(db, { operacion_id, lugar, plazo_pago_dias, pct_desistimiento, dias_desistimiento }, canal) {
+    const op = db.ops.find((x) => x.id === operacion_id);
+    const oferta = db.ofertas.filter((x) => x.operacion_id === operacion_id).at(-1);
+    if (oferta?.estado !== 'aceptada') throw new Error('La oferta debe estar aceptada');
+    const e = {
+      id: uuid(), operacion_id, oferta_id: oferta.id, lugar, plazo_pago_dias, pct_desistimiento,
+      dias_desistimiento, estado: 'enviada', canal, created_at: ahora(),
+    };
+    db.encargos.push(e);
+    return { op, e, oferta };
+  }
+
+  function docVivo(db, titular_id, tipo, excepto) {
+    return db.docs.find((d) => d.titular_id === titular_id && d.tipo === tipo && d.estado !== 'sustituido' && d.id !== excepto);
+  }
+
   const ACCIONES = {
+    'crear-expediente'(db, { operacion_id }) {
+      const op = db.ops.find((o) => o.id === operacion_id);
+      asegurarExpediente(db, op);
+      return { expediente: op.expediente, alias: op.alias, avisos: [] };
+    },
+    'generar-oferta'(db, datos) {
+      const { op, o } = nuevaOferta(db, datos, 'manual');
+      o.pdf_drive_id = null;
+      return { oferta_id: o.id, id_pdf: o.id, nombre: `${op.expediente} - Oferta.pdf`, lineas: lineasOferta(db, op, o) };
+    },
+    'generar-nota'(db, datos) {
+      const { op, e, oferta } = nuevaNota(db, datos, 'manual');
+      return { encargo_id: e.id, id_pdf: e.id, nombre: `${op.expediente} - Nota de Encargo.pdf`, lineas: lineasNota(db, op, e, oferta) };
+    },
+    'subir-documento'(db, { operacion_id, titular_id, tipo, documento_id, archivo_nombre }) {
+      const op = db.ops.find((o) => o.id === operacion_id);
+      asegurarExpediente(db, op);
+      const nombreArchivo = archivo_nombre.replace(/\.docx?$/i, '.pdf');
+      const comun = { estado: 'aprobado', origen: 'gestor', archivo_nombre: nombreArchivo, aprobado_at: ahora() };
+      const previo = documento_id && db.docs.find((d) => d.id === documento_id);
+      if (previo && (previo.estado === 'pendiente' || previo.estado === 'no_aplica')) {
+        Object.assign(previo, comun);
+        return { ...previo };
+      }
+      if (previo) {
+        previo.estado = 'sustituido';
+        const nuevo = { id: uuid(), operacion_id, titular_id: previo.titular_id, tipo: previo.tipo, version: previo.version + 1, created_at: ahora(), ...comun };
+        db.docs.push(nuevo);
+        return { ...nuevo };
+      }
+      if (docVivo(db, titular_id, tipo)) throw new Error(`Ya hay un documento "${tipo}" para este titular. Usa Sustituir.`);
+      const nuevo = { id: uuid(), operacion_id, titular_id, tipo, version: 1, created_at: ahora(), ...comun };
+      db.docs.push(nuevo);
+      return { ...nuevo };
+    },
+    'quitar-documento'(db, { documento_id, motivo }) {
+      const d = db.docs.find((x) => x.id === documento_id);
+      if (d.estado === 'pendiente') d.estado = 'no_aplica';
+      else Object.assign(d, { estado: 'sustituido', motivo: motivo || null });
+      return {};
+    },
+    'cambiar-tipo-documento'(db, { documento_id, tipo }) {
+      const d = db.docs.find((x) => x.id === documento_id);
+      if (docVivo(db, d.titular_id, tipo, d.id)) throw new Error(`Ya hay un documento "${tipo}" para este titular`);
+      d.tipo = tipo;
+      return {};
+    },
     'enviar-enlace'(db, { operacion_id, documentos }) {
       const op = db.ops.find((o) => o.id === operacion_id);
       const tits = tituLaresOp(db, op.id);
       const sinEmail = tits.filter((t) => !t.email);
       if (sinEmail.length) throw new Error(`Falta el email de ${sinEmail.map(nombre).join(', ')}`);
-      if (!op.expediente) {
-        const anio = new Date().getFullYear();
-        db.contadores[anio] = (db.contadores[anio] || 0) + 1;
-        op.expediente = String(anio % 100).padStart(2, '0') + String(db.contadores[anio]).padStart(3, '0');
-        op.alias = op.alias || sinAcentos((tits[0]?.apellidos || 'CLIENTE').split(' ')[0]).toUpperCase();
-        op.drive_folder_id = null;
-      }
+      asegurarExpediente(db, op);
       documentos.forEach(({ titular_id, tipo }) => {
         const existe = db.docs.some((d) => d.titular_id === titular_id && d.tipo === tipo && d.estado !== 'sustituido');
         if (!existe) {
@@ -93,36 +202,27 @@
         `Hola ${t.nombre}:\n\nNecesitamos que vuelvas a subir "${d.tipo}".\nMotivo: ${motivo}\n\nUsa el mismo enlace personal.\n\nBajo Teja`);
       return {};
     },
-    'enviar-oferta'(db, { operacion_id, honorarios, iva_incluido, iva_pct, mensaje }) {
-      const op = db.ops.find((o) => o.id === operacion_id);
-      if (!op.expediente) throw new Error('Primero hay que enviar el enlace y crear el expediente');
-      db.ofertas.push({
-        id: uuid(), operacion_id, honorarios, iva_incluido, iva_pct, mensaje: mensaje || null,
-        estado: 'enviada', via: null, created_at: ahora(),
-      });
+    'enviar-oferta'(db, datos) {
+      const sinEmail = tituLaresOp(db, datos.operacion_id).filter((t) => !t.email);
+      if (sinEmail.length) throw new Error(`Falta el email de ${sinEmail.map(nombre).join(', ')}`);
+      const { op, o } = nuevaOferta(db, datos, 'email');
       tituLaresOp(db, op.id).forEach((t) => correo(db, op, t, 'oferta', `Tu propuesta · Expediente ${op.expediente}`,
-        `Hola ${t.nombre}:\n\nTe adjuntamos nuestra propuesta de servicios. Honorarios: ${importe(honorarios)} € (${iva_incluido ? 'IVA incluido' : `IVA no incluido, ${iva_pct} %`}).\n\nPuedes aceptarla o rechazarla desde tu enlace personal.\n\nBajo Teja`,
+        `Hola ${t.nombre}:\n\nTe adjuntamos nuestra propuesta de servicios. Honorarios: ${importeTexto(o)}.\n\nPuedes aceptarla o rechazarla desde tu enlace personal.\n\nBajo Teja`,
         { adjunto: `${op.expediente} - Oferta.pdf` }));
-      if (op.etapa < 3) op.etapa = 3;
-      return {};
+      return { id_pdf: o.id, lineas: lineasOferta(db, op, o) };
     },
     'marcar-oferta'(db, { oferta_id, estado }) {
       const o = db.ofertas.find((x) => x.id === oferta_id);
       Object.assign(o, { estado, via: 'manual', respondida_at: ahora() });
       return {};
     },
-    'enviar-nota'(db, { operacion_id, lugar, plazo_pago_dias, pct_desistimiento, dias_desistimiento }) {
-      const op = db.ops.find((o) => o.id === operacion_id);
-      const oferta = db.ofertas.filter((o) => o.operacion_id === operacion_id).at(-1);
-      if (oferta?.estado !== 'aceptada') throw new Error('La oferta debe estar aceptada');
-      db.encargos.push({
-        id: uuid(), operacion_id, oferta_id: oferta.id, lugar, plazo_pago_dias, pct_desistimiento,
-        dias_desistimiento, estado: 'enviada', created_at: ahora(),
-      });
+    'enviar-nota'(db, datos) {
+      const { op, e, oferta } = nuevaNota(db, datos, 'email');
+      const r = { id_pdf: e.id, lineas: lineasNota(db, op, e, oferta) };
       tituLaresOp(db, op.id).forEach((t) => correo(db, op, t, 'nota', `Nota de Encargo · Expediente ${op.expediente}`,
         `Hola ${t.nombre}:\n\nTe adjuntamos la Nota de Encargo para tu firma.\n\nBajo Teja`,
         { adjunto: `${op.expediente} - Nota de Encargo.pdf` }));
-      return {};
+      return r;
     },
     'marcar-nota'(db, { encargo_id }) {
       const e = db.encargos.find((x) => x.id === encargo_id);
