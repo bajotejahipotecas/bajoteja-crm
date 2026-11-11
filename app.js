@@ -384,14 +384,15 @@
     $('[data-cerrar]', m)?.addEventListener('click', () => m.close());
     $('form', m).addEventListener('submit', async (e) => {
       e.preventDefault();
-      const botones = $$('button[type=submit]', m);
+      const botones = $$('button[type=submit]:not(:disabled)', m);
       botones.forEach((b) => { b.disabled = true; });
       try {
         const datos = new FormData(e.target);
         /* El botón pulsado (p. ej. "Generar PDF" o "Enviar por email") se añade a mano: no todos los navegadores lo incluyen. */
         if (e.submitter?.name) datos.set(e.submitter.name, e.submitter.value);
         await alEnviar(datos);
-        if (m.open) m.close();
+        /* Si alEnviar abrió otro modal (p. ej. los enlaces), se queda abierto. */
+        if (m.open && m.contains(e.target)) m.close();
       } catch (err) {
         botones.forEach((b) => { b.disabled = false; });
         fallo(err);
@@ -652,9 +653,9 @@
 
     const paso1 = op.expediente
       ? filaPaso('Documentación', p.total ? `${p.listo ? 'Completa: ' : ''}${p.aprobados} de ${p.total} aprobados` : 'Sin documentos pedidos',
-        boton('data-enlace', 'Pedir al cliente') + boton('data-reenviar', 'Reenviar enlace'), p.listo)
+        boton('data-enlace', 'Pedir al cliente') + boton('data-reenviar', 'Nuevo enlace'), p.listo)
       : filaPaso('Documentación', 'Crea el número y la carpeta, o envía directamente el enlace al cliente',
-        boton('data-crear-expediente', 'Crear expediente') + boton('data-enlace', 'Enviar enlace', 'btn-primario'), false);
+        boton('data-crear-expediente', 'Crear expediente') + boton('data-enlace', 'Pedir documentación', 'btn-primario'), false);
 
     const entrega = (x) => (x.canal === 'manual' ? 'Generada en PDF' : 'Enviada por email');
     let paso2;
@@ -697,6 +698,7 @@
       if (estado.fichaId) pintarFicha();
       (r?.avisos || []).forEach((a) => aviso(a, true));
       if (exito && !r?.avisos?.length) aviso(exito);
+      return r;
     } catch (err) {
       err.visible = true;
       throw err;
@@ -717,22 +719,69 @@
       || '<p class="campo-nota">Ya están pedidos todos los documentos de este perfil.</p>';
   }
 
+  /* Enlaces para compartir a mano: se muestran una sola vez, no se guardan. */
+  function modalEnlaces(enlaces) {
+    const whatsapp = (e) => {
+      let tel = (e.telefono || '').replace(/\D/g, '');
+      if (tel.length === 9) tel = `34${tel}`;
+      const texto = `Hola ${e.nombre.split(' ')[0]}, este es tu enlace personal de Bajo Teja para subir tu documentación: ${e.url}`;
+      return `https://wa.me/${tel}?text=${encodeURIComponent(texto)}`;
+    };
+    abrirModal(`<form>
+      <h2>Enlaces para el cliente</h2>
+      <p>Cópialos ahora: por seguridad no se guardan y no se pueden volver a ver. Si se pierden, genera uno nuevo. Caducan en 30 días.</p>
+      ${enlaces.map((e, i) => `<div class="enlace-cliente"><strong>${esc(e.nombre)}</strong>
+        <input readonly value="${esc(e.url)}" data-enlace-url="${i}" aria-label="Enlace de ${esc(e.nombre)}">
+        <div class="enlace-acciones"><button class="btn btn-suave" type="button" data-copiar="${i}">Copiar</button>
+        <a class="btn btn-suave" href="${esc(whatsapp(e))}" target="_blank" rel="noopener noreferrer">WhatsApp</a></div></div>`).join('')}
+      <div class="modal-pie"><button class="btn btn-primario" type="submit">Hecho</button></div></form>`, async () => {});
+    $$('#modal [data-copiar]').forEach((b) => b.addEventListener('click', async () => {
+      const campo = $(`#modal [data-enlace-url="${b.dataset.copiar}"]`);
+      try {
+        await navigator.clipboard.writeText(campo.value);
+      } catch {
+        campo.select();
+        document.execCommand('copy');
+      }
+      b.textContent = 'Copiado';
+    }));
+  }
+
+  async function pedirEnlace(accion, datos, canal) {
+    const r = await ejecutar(accion, { ...datos, canal }, canal === 'email' ? 'Enlace enviado por email' : null);
+    if (canal === 'manual' && r?.enlaces?.length) modalEnlaces(r.enlaces);
+  }
+
+  function modalReenviar(op) {
+    const sinEmail = titularesDe(op.id).filter((t) => !t.email).map(nombreDe);
+    abrirModal(`<form>
+      <h2>Nuevo enlace</h2>
+      <p>Cada titular recibe un enlace nuevo y los anteriores dejan de funcionar.</p>
+      ${sinEmail.length ? `<p class="campo-nota">Sin email: ${esc(sinEmail.join(', '))}. Solo se puede generar el enlace para compartirlo tú.</p>` : ''}
+      <div class="modal-pie"><button class="btn btn-suave" type="button" data-cerrar>Cancelar</button>
+      <button class="btn btn-suave" type="submit" name="canal" value="email"${sinEmail.length ? ' disabled' : ''}>Enviar por email</button>
+      <button class="btn btn-primario" type="submit" name="canal" value="manual">Generar enlace</button></div></form>`,
+    (d) => pedirEnlace('reenviar-enlace', { operacion_id: op.id }, d.get('canal')));
+  }
+
   function modalEnlace(op) {
     const tits = titularesDe(op.id);
     const sinEmail = tits.filter((t) => !t.email).map(nombreDe);
     if (!tits.length) { aviso('Añade al menos un titular.', true); return; }
-    if (sinEmail.length) { aviso(`Falta el email de ${sinEmail.join(', ')}.`, true); return; }
     const perfil = (t) => (PERFILES.includes(t.perfil_laboral) ? t.perfil_laboral : 'Asalariado');
     abrirModal(`<form>
-      <h2>${op.expediente ? 'Añadir documentos' : 'Enviar enlace al cliente'}</h2>
-      <p>${op.expediente ? `Expediente ${esc(op.expediente)}. Cada titular recibe un enlace nuevo.` : 'Se asigna el número de expediente, se crea la carpeta en Drive y cada titular recibe su enlace por email.'}</p>
-      ${tits.map((t) => `<fieldset class="doc-titular"><legend>${esc(nombreDe(t))} · ${esc(t.email)}</legend>
+      <h2>${op.expediente ? 'Añadir documentos' : 'Pedir documentación al cliente'}</h2>
+      <p>${op.expediente ? `Expediente ${esc(op.expediente)}. Cada titular recibe un enlace nuevo.` : 'Se asigna el número de expediente, se crea la carpeta en Drive y se crea un enlace personal por titular.'}
+      Lo que suba el cliente se guarda en su carpeta de Drive.</p>
+      ${sinEmail.length ? `<p class="campo-nota">Sin email: ${esc(sinEmail.join(', '))}. Genera el enlace y compártelo tú por WhatsApp.</p>` : ''}
+      ${tits.map((t) => `<fieldset class="doc-titular"><legend>${esc(nombreDe(t))}${t.email ? ` · ${esc(t.email)}` : ''}</legend>
         <label class="campo"><span>Perfil laboral</span><select data-perfil="${esc(t.id)}">${PERFILES.map((x) => `<option${x === perfil(t) ? ' selected' : ''}>${esc(x)}</option>`).join('')}</select></label>
         <div class="doc-casillas" data-casillas="${esc(t.id)}">${casillasDocumentos(t, op, perfil(t))}</div>
         <label class="campo"><span>Otro documento (opcional)</span><input name="extra-${esc(t.id)}"></label>
       </fieldset>`).join('')}
       <div class="modal-pie"><button class="btn btn-suave" type="button" data-cerrar>Cancelar</button>
-      <button class="btn btn-primario" type="submit">Enviar</button></div></form>`, async (d) => {
+      <button class="btn btn-suave" type="submit" name="canal" value="email"${sinEmail.length ? ' disabled' : ''}>Enviar por email</button>
+      <button class="btn btn-primario" type="submit" name="canal" value="manual">Generar enlace</button></div></form>`, async (d) => {
       const documentos = d.getAll('doc').map((v) => {
         const [titular_id, ...tipo] = v.split('|');
         return { titular_id, tipo: tipo.join('|') };
@@ -749,7 +798,7 @@
           t.perfil_laboral = elegido;
         }
       }
-      await ejecutar('enviar-enlace', { operacion_id: op.id, documentos }, 'Enlace enviado');
+      await pedirEnlace('enviar-enlace', { operacion_id: op.id, documentos }, d.get('canal'));
     });
     $$('[data-perfil]').forEach((sel) => sel.addEventListener('change', () => {
       const t = tits.find((x) => x.id === sel.dataset.perfil);
@@ -1177,12 +1226,8 @@
       else if ('nuevoTitular' in d) anadirTitular();
       else if ('nuevoComentario' in d) anadirComentario();
       else if ('enlace' in d) modalEnlace(opActual());
-      else if ('reenviar' in d) {
-        confirmar({
-          titulo: 'Reenviar enlace', texto: 'Cada titular recibe un enlace nuevo y los anteriores dejan de funcionar.', accion: 'Reenviar',
-          alAceptar: () => ejecutar('reenviar-enlace', { operacion_id: estado.fichaId }, 'Enlace reenviado'),
-        });
-      } else if ('oferta' in d) modalOferta(opActual());
+      else if ('reenviar' in d) modalReenviar(opActual());
+      else if ('oferta' in d) modalOferta(opActual());
       else if (d.marcarOferta) accionDirecta('marcar-oferta', { oferta_id: ultimaOferta(estado.fichaId).id, estado: d.marcarOferta }, 'Oferta actualizada');
       else if ('nota' in d) modalNota(opActual());
       else if ('marcarNota' in d) accionDirecta('marcar-nota', { encargo_id: ultimoEncargo(estado.fichaId).id }, 'Nota firmada');

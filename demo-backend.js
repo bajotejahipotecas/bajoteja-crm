@@ -36,15 +36,23 @@
     });
   }
 
-  function crearEnlaces(db, op) {
-    tituLaresOp(db, op.id).forEach((t) => {
+  function crearEnlaces(db, op, canal = 'email') {
+    return tituLaresOp(db, op.id).map((t) => {
       db.enlaces.filter((e) => e.titular_id === t.id).forEach((e) => { e.revocado = true; });
       const token = uuid().replaceAll('-', '');
       db.enlaces.push({ id: uuid(), operacion_id: op.id, titular_id: t.id, token, revocado: false });
+      const url = new URL(`../portal/#${token}`, location.href).href;
+      if (canal === 'manual') return { titular_id: t.id, nombre: nombre(t), telefono: t.telefono || null, url };
       correo(db, op, t, 'enlace', `Tu documentación · Expediente ${op.expediente}`,
         `Hola ${t.nombre}:\n\nPara estudiar tu hipoteca necesitamos tu documentación. Entra en tu enlace personal, sube los archivos, revísalos y apruébalos cuando estén correctos.\n\nEl enlace es personal y caduca en 30 días.\n\nBajo Teja`,
         { enlace_demo: token });
-    });
+      return null;
+    }).filter(Boolean);
+  }
+
+  function exigirEmails(db, operacionId, canal) {
+    const sinEmail = tituLaresOp(db, operacionId).filter((t) => !t.email);
+    if (canal !== 'manual' && sinEmail.length) throw new Error(`Falta el email de ${sinEmail.map(nombre).join(', ')}`);
   }
 
   function asegurarExpediente(db, op) {
@@ -163,11 +171,9 @@
       d.tipo = tipo;
       return {};
     },
-    'enviar-enlace'(db, { operacion_id, documentos }) {
+    'enviar-enlace'(db, { operacion_id, documentos, canal }) {
       const op = db.ops.find((o) => o.id === operacion_id);
-      const tits = tituLaresOp(db, op.id);
-      const sinEmail = tits.filter((t) => !t.email);
-      if (sinEmail.length) throw new Error(`Falta el email de ${sinEmail.map(nombre).join(', ')}`);
+      exigirEmails(db, op.id, canal);
       asegurarExpediente(db, op);
       documentos.forEach(({ titular_id, tipo }) => {
         const existe = db.docs.some((d) => d.titular_id === titular_id && d.tipo === tipo && d.estado !== 'sustituido');
@@ -175,13 +181,13 @@
           db.docs.push({ id: uuid(), operacion_id: op.id, titular_id, tipo, estado: 'pendiente', version: 1, created_at: ahora() });
         }
       });
-      crearEnlaces(db, op);
+      const enlaces = crearEnlaces(db, op, canal);
       if (op.etapa === 1) op.etapa = 2;
-      return { expediente: op.expediente, alias: op.alias, avisos: [] };
+      return { expediente: op.expediente, alias: op.alias, avisos: [], enlaces };
     },
-    'reenviar-enlace'(db, { operacion_id }) {
-      crearEnlaces(db, db.ops.find((o) => o.id === operacion_id));
-      return {};
+    'reenviar-enlace'(db, { operacion_id, canal }) {
+      exigirEmails(db, operacion_id, canal);
+      return { enlaces: crearEnlaces(db, db.ops.find((o) => o.id === operacion_id), canal) };
     },
     'documento-no-aplica'(db, { documento_id, no_aplica }) {
       const d = db.docs.find((x) => x.id === documento_id);

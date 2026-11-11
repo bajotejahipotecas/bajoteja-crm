@@ -268,7 +268,12 @@ dialog::backdrop { background: rgba(14, 27, 46, .5); }
 }
 .modal h2 { font-size: 18px; font-weight: 700; margin-bottom: 12px; }
 .modal p { margin-bottom: 12px; color: var(--taupe-texto); }
-.modal-pie { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.modal-pie { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+.enlace-cliente { border: 1px solid var(--linea); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; display: grid; gap: 8px; }
+.enlace-cliente strong { font-weight: 600; font-size: 13.5px; }
+.enlace-cliente input { width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--linea); background: var(--papel); font-size: 12.5px; }
+.enlace-acciones { display: flex; gap: 8px; }
+.enlace-acciones a { text-decoration: none; }
 
 .visor {
   width: min(900px, calc(100vw - 32px)); height: calc(100dvh - 32px); max-height: none; max-width: none;
