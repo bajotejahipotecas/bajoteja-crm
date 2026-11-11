@@ -665,16 +665,17 @@
         boton('data-oferta', 'Preparar oferta', p.listo ? 'btn-primario' : 'btn-suave'), false);
     } else {
       const precio = `${euros(oferta.honorarios)} ${oferta.iva_incluido ? 'IVA incluido' : `+ ${oferta.iva_pct} % IVA`}`;
-      const pdf = botonPdf(oferta.pdf_drive_id, oferta.id, 'Ver PDF') + botonPdf(oferta.pdf_firmado_drive_id, null, 'Ver firmada');
-      const firmadaSinPdf = firmasDe(oferta.id).length > 0 && !oferta.pdf_firmado_drive_id && store.modo !== 'demo';
+      const conPdfFirmado = Boolean(oferta.pdf_firmado_drive_id || oferta.firmado_demo);
+      const pdf = botonPdf(oferta.pdf_drive_id, oferta.id, 'Ver PDF') + botonPdf(oferta.pdf_firmado_drive_id, oferta.firmado_demo ? `${oferta.id}-firmado` : null, 'Ver firmada');
+      const firmadaSinPdf = firmasDe(oferta.id).length > 0 && !conPdfFirmado && store.modo !== 'demo';
       const reintento = firmadaSinPdf ? boton('data-completar-firma="oferta"', 'Generar PDF firmado') : '';
-      const sinFirmar = !firmasDe(oferta.id).length && !oferta.pdf_firmado_drive_id;
-      const pedirFirma = sinFirmar ? boton('data-pedir-firma="oferta"', 'Pedir firma') : '';
+      const sinFirmar = !firmasDe(oferta.id).length && !conPdfFirmado;
+      const pedirFirma = sinFirmar ? boton('data-pedir-firma="oferta"', 'Pedir firma') + boton('data-subir-firmado="oferta"', 'Subir firmada') : '';
       if (oferta.estado === 'enviada') {
         paso2 = filaPaso('Oferta', `${entrega(oferta)} · ${precio} · pendiente de firma del cliente`,
           pdf + reintento + pedirFirma + boton('data-marcar-oferta="aceptada"', 'Marcar aceptada') + boton('data-marcar-oferta="rechazada"', 'Marcar rechazada'), false);
       } else if (oferta.estado === 'aceptada') {
-        const como = oferta.pdf_firmado_drive_id || firmasDe(oferta.id).length ? ' y firmada por el cliente'
+        const como = conPdfFirmado || firmasDe(oferta.id).length ? ' y firmada'
           : oferta.via === 'portal' ? ' por el cliente en el portal' : ' a mano, sin firma del cliente';
         paso2 = filaPaso('Oferta', `Aceptada${como} · ${precio}`, pdf + reintento + pedirFirma, true);
       } else {
@@ -683,12 +684,16 @@
     }
 
     let paso3;
-    const pdfNota = nota ? botonPdf(nota.pdf_drive_id, nota.id, 'Ver PDF') + botonPdf(nota.pdf_firmado_drive_id, null, 'Ver firmada') : '';
+    const notaConPdf = Boolean(nota?.pdf_firmado_drive_id || nota?.firmado_demo);
+    const pdfNota = nota ? botonPdf(nota.pdf_drive_id, nota.id, 'Ver PDF') + botonPdf(nota.pdf_firmado_drive_id, nota.firmado_demo ? `${nota.id}-firmado` : null, 'Ver firmada') : '';
+    const subirNota = nota && !notaConPdf ? boton('data-subir-firmado="nota"', 'Subir firmada') : '';
     const firmasNota = nota ? firmasDe(nota.id) : [];
     const totalTits = titularesDe(op.id).length;
     const faltanTits = titularesDe(op.id).filter((t) => !firmasNota.some((f) => f.titular_id === t.id)).map(nombreDe);
     if (nota?.estado === 'firmada') {
-      paso3 = filaPaso('Nota de Encargo', firmasNota.length ? `Firmada en el portal por ${firmasNota.length} de ${totalTits}` : 'Firmada', pdfNota, true);
+      const como = firmasNota.length ? `Firmada en el portal por ${firmasNota.length} de ${totalTits}`
+        : notaConPdf ? 'Firmada (PDF firmado subido)' : 'Marcada como firmada, sin PDF firmado';
+      paso3 = filaPaso('Nota de Encargo', como, pdfNota + subirNota, true);
     } else if (nota) {
       const detalle = firmasNota.length
         ? `Firmada por ${firmasNota.length} de ${totalTits}${faltanTits.length ? ` · falta ${faltanTits.join(', ')}` : ''}`
@@ -696,7 +701,7 @@
       const reintento = !faltanTits.length && !nota.pdf_firmado_drive_id && store.modo !== 'demo'
         ? boton('data-completar-firma="nota"', 'Generar PDF firmado', 'btn-primario') : '';
       const pedirFirma = faltanTits.length ? boton('data-pedir-firma="nota"', 'Pedir firma') : '';
-      paso3 = filaPaso('Nota de Encargo', detalle, pdfNota + reintento + pedirFirma + boton('data-marcar-nota', 'Marcar firmada'), false);
+      paso3 = filaPaso('Nota de Encargo', detalle, pdfNota + reintento + pedirFirma + subirNota + boton('data-marcar-nota', 'Marcar firmada'), false);
     }
     else {
       paso3 = filaPaso('Nota de Encargo', oferta?.estado === 'aceptada' ? 'Lista para preparar' : 'Se habilita al aceptar la oferta',
@@ -941,7 +946,7 @@
     if (estado.fichaId) pintarFicha();
     const pdf = await store.pdfGenerado(r);
     if (pdf) abrirVisor(titulo, pdf, r.nombre);
-    aviso(`${titulo} generada. Descárgala para enviarla.`);
+    aviso(`${titulo} generada. Para que el cliente la firme en línea, pulsa "Pedir firma"; si la firma en papel, "Subir firmada".`);
   }
 
   const DOCS_ACEPTADOS = '.pdf,.doc,.docx,.jpg,.jpeg,.png,.webp';
@@ -997,6 +1002,32 @@
       pintar();
       pintarFicha();
       aviso('Documento guardado');
+    });
+  }
+
+  /* Oferta o Nota firmada en papel o devuelta por WhatsApp: sustituye a "Marcar" y deja el PDF en Drive. */
+  function modalSubirFirmado(tipo) {
+    const ref = tipo === 'oferta' ? ultimaOferta(estado.fichaId) : ultimoEncargo(estado.fichaId);
+    const titulo = tipo === 'oferta' ? 'la oferta' : 'la Nota de Encargo';
+    abrirModal(`<form>
+      <h2>Subir ${esc(titulo)} firmada</h2>
+      <p>Para cuando la firman en papel o te la devuelven firmada. Se guarda en 02 Contratos como "FIRMADA", bloqueada,
+      y ${tipo === 'oferta' ? 'la oferta queda aceptada' : 'la Nota queda firmada y la operación pasa a la etapa 4'}.
+      Puedes subir un PDF, un Word o varias fotos de las páginas.</p>
+      <label class="campo"><span>Archivo</span><input name="archivo" type="file" multiple accept="${DOCS_ACEPTADOS}" required></label>
+      <div class="modal-pie"><button class="btn btn-suave" type="button" data-cerrar>Cancelar</button>
+      <button class="btn btn-primario" type="submit">Subir firmada</button></div></form>`, async () => {
+      const { archivo, nombre } = await prepararArchivo($('#modal [name=archivo]').files);
+      try {
+        await store.subirFirmado({ tipo, referencia_id: ref.id, archivo, nombre });
+      } catch (err) {
+        err.visible = true;
+        throw err;
+      }
+      await refrescar();
+      pintar();
+      pintarFicha();
+      aviso('PDF firmado guardado en Drive');
     });
   }
 
@@ -1260,6 +1291,7 @@
       else if (d.verPdf) verPdfGuardado(d.verPdf);
       else if ('crearExpediente' in d) accionDirecta('crear-expediente', { operacion_id: estado.fichaId }, 'Expediente creado');
       else if (d.pedirFirma) modalReenviar(opActual(), d.pedirFirma);
+      else if (d.subirFirmado) modalSubirFirmado(d.subirFirmado);
       else if (d.completarFirma) {
         const ref = d.completarFirma === 'oferta' ? ultimaOferta(estado.fichaId) : ultimoEncargo(estado.fichaId);
         accionDirecta('completar-firma', { tipo: d.completarFirma, referencia_id: ref.id }, 'PDF firmado guardado en Drive');

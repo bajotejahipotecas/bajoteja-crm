@@ -105,6 +105,15 @@
         form.append('archivo', archivo, nombre);
         return invocar(form);
       },
+      /* Oferta o Nota firmada fuera del portal. */
+      async subirFirmado({ tipo, referencia_id, archivo, nombre }) {
+        const form = new FormData();
+        form.append('accion', 'subir-firmado');
+        form.append('tipo', tipo);
+        form.append('referencia_id', referencia_id);
+        form.append('archivo', archivo, nombre);
+        return invocar(form);
+      },
       /* PDF devuelto por generar-oferta / generar-nota. */
       async pdfGenerado(r) {
         const bytes = Uint8Array.from(atob(r.pdf_base64), (c) => c.charCodeAt(0));
@@ -170,6 +179,11 @@
         const r = demo.crm('subir-documento', { ...datos, archivo_nombre: nombre });
         const pdf = /\.docx?$/i.test(nombre) ? await window.PortalPdf.pdfAvisoDemo(nombre) : archivo;
         await demo.guardarPdf(r.id, pdf);
+        return r;
+      },
+      async subirFirmado({ archivo, nombre, ...datos }) {
+        const r = demo.crm('subir-firmado', datos);
+        await demo.guardarPdf(`${datos.referencia_id}-firmado`, /\.docx?$/i.test(nombre) ? await window.PortalPdf.pdfAvisoDemo(nombre) : archivo);
         return r;
       },
       async pdfGenerado(r) { return demo.leerPdf(r.id_pdf); },

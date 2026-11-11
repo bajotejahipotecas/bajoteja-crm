@@ -186,6 +186,18 @@
       if (op.etapa === 1) op.etapa = 2;
       return { expediente: op.expediente, alias: op.alias, avisos: [], enlaces };
     },
+    'subir-firmado'(db, { tipo, referencia_id }) {
+      const x = (tipo === 'oferta' ? db.ofertas : db.encargos).find((y) => y.id === referencia_id);
+      if (x.firmado_demo) throw new Error('Ya hay un PDF firmado de este documento');
+      x.firmado_demo = true;
+      if (tipo === 'oferta' && x.estado === 'enviada') Object.assign(x, { estado: 'aceptada', via: 'manual', respondida_at: ahora() });
+      if (tipo === 'nota') {
+        Object.assign(x, { estado: 'firmada', firmado_at: x.firmado_at || ahora() });
+        const op = db.ops.find((o) => o.id === x.operacion_id);
+        if (op.etapa < 4) op.etapa = 4;
+      }
+      return {};
+    },
     'reenviar-enlace'(db, { operacion_id, canal }) { /* el motivo solo cambia el texto del email real */
       exigirEmails(db, operacion_id, canal);
       return { enlaces: crearEnlaces(db, db.ops.find((o) => o.id === operacion_id), canal) };
